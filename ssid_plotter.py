@@ -20,6 +20,9 @@ v0.1
 filename = "out.csv"
 ssids = set() # for testing purpose to store values locally instead of csv file
 channel = Value('i',0)  # needed for shared state between multiprocessors
+power = Value('i',0)  # needed for shared variable between function (not sure how to pass argument to prn in sniff(), scapy)
+SIG_THRESHOLD = -80   # signal threshold before storing value (in dB)
+
 
 def parse_arguments():
     """
@@ -32,7 +35,8 @@ def parse_arguments():
     parser = argparse.ArgumentParser(description=desc)
     parser.add_argument('-i','--interface', metavar="",type=str, help='wireless interface',required = True )
     parser.add_argument('-c','--count', metavar="", type=int, help='packets to sniff. Default = 10000', default=10000)
-    parser.add_argument('-s','--sensitive', metavar="", type=int, help='How strong SSID signal needs to be -[1]=very close (<50dB), [2]=moderate(<70dB), [3]=accepts all SSID', default=1)
+    parser.add_argument('-p','--power', metavar="", type=int, help='minimum SSID signal needs to be in dB, make sure its negative value', default=-100)
+    parser.add_argument('-g','--gps', metavar="", type=int, help='Enable or disable GPS - [1]=enabled, [0]=disabled', default=1)
     args = parser.parse_args()
 
     return args
@@ -43,13 +47,16 @@ def PacketHandler(pkt) :
     if pkt.haslayer(Dot11Beacon) :
         if pkt.info:   # if not hidden SSID
             # check if pkt.info(SSID) or pkt.addr3 (BSSID) is already n csv_file
-            if check(pkt.info,pkt.addr3) :
+            if check(pkt.info,pkt.addr3,pkt.dBm_AntSignal) :
                 write(pkt.info,pkt.addr3,pkt.dBm_AntSignal)     # write new found SSID + BSSID into csv
                 #print (len(ssids), pkt.addr3, pkt.info)  #addr3 = BSSID 
 
-def check(ssid, bssid):
+def check(ssid, bssid, signal):
     
     ssid_exists = 0
+    
+    if (signal < power.value) :
+        return 0
 
     with open("out.csv", "r") as file1:
         for line1 in file1: 
@@ -68,7 +75,6 @@ def check(ssid, bssid):
     else :    # no SSID / BSSID found , must be new entry
         return 1
 
-
 def write(ssid, bssid, signal):
 
     # write coordinates into file including SSID 
@@ -76,10 +82,8 @@ def write(ssid, bssid, signal):
         packet = gpsd.get_current()
         coordinate = packet.position()
         # Separate latitude and longtitude
-        #coordinate = '11111,22222'
-        temp = coordinate.split(",")
-        latitude = temp[0]
-        longitude = temp[1]
+        latitude = coordinate[0]
+        longitude = coordinate[1]
 
     except:
         latitude = ""
@@ -91,7 +95,7 @@ def write(ssid, bssid, signal):
         csv_writer.writerow([ssid.decode(),bssid,channel.value,signal,latitude,longitude])        
 
 def channel_hop(interface):
-    process_id = os.getpid()
+    #process_id = os.getpid()
     while True:
         try:
             channel.value = random.randrange(1,15)
@@ -101,7 +105,7 @@ def channel_hop(interface):
             break      
 
 def main():
-    process_id1 = os.getpid()
+    #process_id1 = os.getpid()
     """Main Function"""
     print(BANNER + "\n\n")
     args = parse_arguments()
@@ -109,6 +113,9 @@ def main():
     # Start the channel hopper, creates a new process
     p = Process(target = channel_hop, args=(args.interface,))
     p.start()
+
+    # To do: create new process for gpsd 
+
 
     #open newfile or existing file 
     exists = os.path.isfile(filename)
@@ -123,8 +130,10 @@ def main():
     # connect to the local gpsd . gpsd -N -n -D2 /dev/ttyACM0
     #start_gpsd = 'gpsd -N -n /dev/ttyACM0'
     #os.system(start_gpsd)
-    #gpsd.connect()
+    if (args.gps):
+        gpsd.connect()
 
+    power.value = args.power   # used in check() function
     sniff(iface = args.interface, count = args.count, prn = PacketHandler)
 
 if __name__ == "__main__":
